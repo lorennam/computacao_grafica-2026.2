@@ -311,6 +311,11 @@ function desenhaPixel(x, y, cor) {
 function algoritmoDDA(x1, y1, x2, y2) {
   const log   = document.getElementById('log');
   const cor   = document.getElementById('corPixel').value;
+
+  const tracejadoAtivo = document.getElementById('tracejado').checked;
+  const padrao = parseInt(document.getElementById('padrao').value) || 8;
+  const aceso  = parseInt(document.getElementById('aceso').value) || 4;
+  
   log.innerHTML = ''; 
 
   // Calculamos as diferenças
