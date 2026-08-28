@@ -63,6 +63,31 @@
       border-radius: 4px;
       text-align: center;
     }
+    .controles .toggle-wrap {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.85rem;
+      color: #aaa;
+      margin-left: 6px;
+    }
+    .controles .toggle-wrap input[type="checkbox"] {
+      width: 15px;
+      height: 15px;
+      accent-color: #00d4ff;
+      cursor: pointer;
+    }
+    .controles .padrao-input {
+      width: 46px;
+      padding: 3px 4px;
+      background: #0f3460;
+      border: 1px solid #00d4ff44;
+      color: #f0c040;
+      border-radius: 4px;
+      text-align: center;
+      font-family: monospace;
+      font-size: 0.8rem;
+    }
     button {
       padding: 6px 14px;
       background: #00d4ff;
@@ -98,6 +123,7 @@
       color: #7effd4;
     }
     .log span { display: block; border-bottom: 1px solid #ffffff11; padding: 1px 0; }
+    .log span.omitido { color: #00d4ff; }
   </style>
 </head>
 <body>
@@ -121,6 +147,20 @@
 
   VANTAGEM: simples de entender e implementar.
   DESVANTAGEM: usa ponto flutuante → mais lento que Bresenham.
+
+  EXTENSÃO — LINHA TRACEJADA (DASHED):
+    Para desenhar uma linha tracejada, usamos o operador resto (%) sobre
+    o índice do passo `i` para decidir se o pixel daquele passo deve ser
+    pintado ou deixado vazio, criando o padrão "aceso / apagado / aceso...".
+
+    Exemplo de regra (padrão = 8, "ligado" = 4):
+        i % 8 < 4   →  pixel aceso  (faz parte do "traço")
+        i % 8 >= 4  →  pixel vazio  (faz parte do "espaço")
+
+    Ou seja, a cada bloco de 8 passos, os primeiros 4 pixels são
+    pintados e os 4 seguintes são pulados — e o ciclo se repete.
+    Mudando o valor de `padrao` e `aceso`, controlamos o comprimento
+    do traço e do espaço em pixels.
   ===================================================================== -->
 
 <h1>Algoritmo DDA — Rasterização de Retas</h1>
@@ -143,6 +183,14 @@
     e arredondamos para pintar o pixel inteiro mais próximo.
     O resultado é uma aproximação discreta da reta matemática contínua.
   </p>
+  <h2 style="margin-top:12px">Linha tracejada (dashed)</h2>
+  <p>
+    Ativando a opção <strong>"Linha tracejada"</strong> abaixo, cada passo <code>i</code>
+    do loop é testado com o operador resto: <code>i % padrao < aceso</code>.
+    Se verdadeiro, o pixel é pintado (parte do traço); se falso, o pixel é
+    pulado (parte do espaço vazio). Isso cria o efeito visual de "- - - -"
+    ao longo da reta, sem alterar a matemática do avanço x/y do DDA.
+  </p>
 </div>
 
 <!-- SEÇÃO: INTERFACE — controles de entrada ========================== -->
@@ -161,6 +209,19 @@
   <button class="danger" onclick="limpar()">Limpar</button>
   <span style="color:#aaa; font-size:0.8rem; margin-left:8px">
     Cor do pixel: <input type="color" id="corPixel" value="#00ff88" style="width:36px; vertical-align:middle; border:none; cursor:pointer">
+  </span>
+
+  <span class="toggle-wrap">
+    <input type="checkbox" id="tracejado">
+    <label for="tracejado" style="cursor:pointer">Linha tracejada</label>
+  </span>
+  <span class="toggle-wrap">
+    padrão:
+    <input type="number" class="padrao-input" id="padrao" value="8" min="1">
+  </span>
+  <span class="toggle-wrap">
+    aceso:
+    <input type="number" class="padrao-input" id="aceso" value="4" min="1">
   </span>
 </div>
 
@@ -234,10 +295,18 @@ function desenhaPixel(x, y, cor) {
  *
  * A divisão garante que o eixo dominante avance exatamente 1 pixel/passo,
  * e o eixo menor avance proporcionalmente (fração entre 0 e 1).
+ *
+ * LINHA TRACEJADA:
+ *   Se o modo tracejado estiver ativo, cada passo `i` só é pintado quando
+ *   (i % padrao) < aceso. Isso alterna blocos de pixels acesos e vazios
+ *   ao longo do traçado, sem mudar xInc/yInc — só decide se pinta ou não.
  */
 function algoritmoDDA(x1, y1, x2, y2) {
   const log   = document.getElementById('log');
   const cor   = document.getElementById('corPixel').value;
+  const tracejadoAtivo = document.getElementById('tracejado').checked;
+  const padrao = Math.max(1, parseInt(document.getElementById('padrao').value) || 8);
+  const aceso  = Math.max(1, Math.min(padrao, parseInt(document.getElementById('aceso').value) || 4));
   log.innerHTML = '';   // limpa o log anterior
 
   // Calculamos as diferenças
@@ -249,6 +318,9 @@ function algoritmoDDA(x1, y1, x2, y2) {
 
   log.innerHTML += `<span>▶ P1=(${x1},${y1})  P2=(${x2},${y2})</span>`;
   log.innerHTML += `<span>  dx=${dx}  dy=${dy}  steps=${steps}</span>`;
+  if (tracejadoAtivo) {
+    log.innerHTML += `<span class="omitido">  modo tracejado: i % ${padrao} &lt; ${aceso} → pixel aceso</span>`;
+  }
 
   if (steps === 0) {
     // Caso especial: os dois pontos são os mesmos
@@ -266,14 +338,23 @@ function algoritmoDDA(x1, y1, x2, y2) {
   let x = x1;
   let y = y1;
 
+  let pixelsPintados = 0;
+
   // LOOP PRINCIPAL — avançamos 'steps' vezes
   for (let i = 0; i <= steps; i++) {
-    // Pintamos o pixel arredondando para o inteiro mais próximo
-    desenhaPixel(Math.round(x), Math.round(y), cor);
+    // No modo tracejado, só pintamos o pixel se o passo cair no
+    // trecho "aceso" do ciclo (i % padrao < aceso).
+    const deveAcender = !tracejadoAtivo || (i % padrao) < aceso;
+
+    if (deveAcender) {
+      desenhaPixel(Math.round(x), Math.round(y), cor);
+      pixelsPintados++;
+    }
 
     // Logamos apenas os primeiros 10 passos para não travar a tela
     if (i < 10) {
-      log.innerHTML += `<span>  passo ${i}: pixel (${Math.round(x)}, ${Math.round(y)})</span>`;
+      const status = deveAcender ? 'aceso' : 'vazio';
+      log.innerHTML += `<span>  passo ${i}: pixel (${Math.round(x)}, ${Math.round(y)}) — ${status}</span>`;
     } else if (i === 10) {
       log.innerHTML += `<span>  ... (${steps - 10} passos omitidos) ...</span>`;
     }
@@ -283,7 +364,7 @@ function algoritmoDDA(x1, y1, x2, y2) {
     y += yInc;
   }
 
-  log.innerHTML += `<span style="color:#ffd700">✔ Total de pixels pintados: ${steps + 1}</span>`;
+  log.innerHTML += `<span style="color:#ffd700">✔ Total de pixels pintados: ${pixelsPintados} de ${steps + 1} passos</span>`;
 
   // Scroll automático para o final do log
   log.scrollTop = log.scrollHeight;
@@ -359,6 +440,14 @@ canvas.addEventListener('click', function(e) {
     desenharDDA();
     cliques = [];  // reinicia para o próximo par de cliques
   }
+});
+
+// Redesenha automaticamente ao alternar o modo tracejado ou seus parâmetros,
+// se já houver uma reta definida nos inputs.
+['tracejado', 'padrao', 'aceso'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => {
+    desenharDDA();
+  });
 });
 
 /* =====================================================================
