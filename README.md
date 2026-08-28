@@ -1,1 +1,1 @@
-![dda](dda-tracejado-triangulo.png)
+![dda](/assets/dda-tracejado-triangulo.png)
