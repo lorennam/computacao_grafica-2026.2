@@ -1,1 +1,1 @@
-# computacao_grafica-2026.2
+![dda](dda-tracejado-triangulo.png)
