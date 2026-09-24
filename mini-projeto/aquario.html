@@ -1,433 +1,369 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Aquário — Transformações 2D</title>
-<style>
-  html, body { margin: 0; height: 100%; background: #06131f; color: #a9c4d6;
-               font-family: system-ui, sans-serif; }
-  body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
-  canvas { max-width: 100%; height: auto; border-radius: 8px; cursor: pointer; }
-  p { margin: 0; font-size: 14px; text-align: center; padding: 0 12px; }
-</style>
+  <meta charset="UTF-8">
+  <title>Aquário 2D — Transformações Geométricas</title>
+  <style>
+    body { margin: 0; background: #000; overflow: hidden; }
+    canvas { display: block; }
+    #info { position: absolute; top: 10px; left: 10px; color: #dde; pointer-events: none;
+      font: 13px monospace; background: rgba(0,0,0,0.5); padding: 8px; border-radius: 4px; }
+  </style>
 </head>
 <body>
-<canvas id="c" width="900" height="600"></canvas>
-<p>Clique: joga ração · F: novo peixe · M: espelhar · S: ondulação · Espaço: pausar</p>
+<canvas id="canvas"></canvas>
+<div id="info">
+  Clique: bolhas | F: novo peixe | M: espelhar | S: ondulação | Espaço: pausar | R: resetar
+</div>
 
 <script>
-/*
- ============================================================
-  AQUÁRIO — checklist dos requisitos (procure as tags no código)
- ============================================================
-  [1] Translação ............ posição de peixes, bolhas, algas, baú
-  [2] Rotação ............... ângulo do peixe, cauda, tampa do baú, algas
-  [3] Escala ................ tamanho do peixe, bolhas crescendo, "engolida"
-  [4] Composição ............ T → S → R no peixe; cadeia de segmentos na alga
-  [5] Ponto fixo (T→Op→T) ... giraEmTorno / escalaEm / cisalhaEm (helpers abaixo)
-  [6] Animação .............. requestAnimationFrame + setTransform(1,0,0,1,0,0)
-  [7] save/restore .......... todo elemento é desenhado dentro de um par
-  [B1] Interatividade ....... clique (ração), teclado (F, M, S, espaço)
-  [B2] Reflexão/Cisalhamento  peixe espelhado ao virar, cena espelhada (M),
-                             raios de luz e ondulação da água (S)
-  [B3] Hierarquia ........... peixe → cauda → ponta da cauda; alga em cadeia
- ============================================================
-*/
-
-const canvas = document.getElementById('c');
+// =============================================================
+// SETUP DO CANVAS
+// =============================================================
+const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
-const W = canvas.width, H = canvas.height;
-const CHAO = 520;                              // y do topo da areia
-const BAU = { x: 760, y: CHAO + 12 };          // base do baú
-const PEDRA_AR = { x: 110, y: CHAO + 10 };     // pedra que solta bolhas
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
 
-// ---------- Estado ----------
-let tempo = 0, ultimo = null, acBolha = 0, acBau = 0;
-let pausado = false, espelhado = false, ondulando = false;
-let matrizCena = new DOMMatrix();              // guarda a matriz da cena (para converter o clique)
+// =============================================================
+// ESTADO GLOBAL
+// =============================================================
+let tempo = 0;
+let pausado = false;
+let espelhado = false;   // tecla M
+let ondulando = false;   // tecla S
 
-const rand = (a, b) => a + Math.random() * (b - a);
-const limita = (v, a, b) => Math.max(a, Math.min(b, v));
+// =============================================================
+// PASSO 1: FUNÇÕES DE DESENHO
+// Cada objeto é desenhado centrado na ORIGEM (0,0).
+// As transformações (feitas antes de chamar) posicionam, giram e escalam.
+// =============================================================
 
-// ---------- [5] Helpers de ponto fixo: sempre T(p) → Op → T(-p) ----------
-function giraEmTorno(px, py, ang) {
-  ctx.translate(px, py);
-  ctx.rotate(ang);
-  ctx.translate(-px, -py);
-}
-function escalaEm(px, py, sx, sy) {
-  ctx.translate(px, py);
-  ctx.scale(sx, sy);
-  ctx.translate(-px, -py);
-}
-function cisalhaEm(px, py, kx, ky) {           // [B2] cisalhamento: x' = x + kx*y , y' = y + ky*x
-  ctx.translate(px, py);
-  ctx.transform(1, ky, kx, 1, 0, 0);
-  ctx.translate(-px, -py);
-}
-
-// ---------- Dados da cena ----------
-const CORES_PEIXE = [
-  ['#ff7a59', '#ffc2a8'], ['#ffc93c', '#f08a24'], ['#f25f8e', '#ffb3cc'],
-  ['#b48cff', '#e2d2ff'], ['#f3efe0', '#ff8a5b'], ['#ff9f43', '#ffe0a8'],
-];
-
-function sorteiaAlvo(p) {
-  p.alvo = { x: rand(70, W - 70), y: rand(90, CHAO - 80) };
-}
-function novoPeixe(x, y) {
-  const c = CORES_PEIXE[Math.floor(Math.random() * CORES_PEIXE.length)];
-  const p = {
-    x, y, vx: Math.random() < 0.5 ? -1 : 1, vy: 0, dir: 1, ang: 0,
-    tam: rand(0.7, 1.3), gulp: 0, fase: rand(0, 6.28),
-    cor: c[0], cor2: c[1], alvo: null,
-  };
-  p.dir = p.vx >= 0 ? 1 : -1;
-  sorteiaAlvo(p);
-  return p;
-}
-function novaBolha(x, y, r) {
-  return { x, x0: x, y, y0: y, r, vy: rand(0.6, 1.2), fase: rand(0, 6.28) };
-}
-
-const peixes = Array.from({ length: 7 }, () => novoPeixe(rand(80, W - 80), rand(100, CHAO - 100)));
-const comidas = [];
-const bolhas = [];
-
-const algas = [
-  { x: 45,  seg: 7, len: 30, fase: 0.0, cor: '#2fa36b' },
-  { x: 175, seg: 8, len: 32, fase: 1.3, cor: '#3fbf7f' },
-  { x: 255, seg: 6, len: 28, fase: 2.1, cor: '#1f8a5b' },
-  { x: 430, seg: 7, len: 30, fase: 0.7, cor: '#2fa36b' },
-  { x: 610, seg: 8, len: 34, fase: 2.9, cor: '#3fbf7f' },
-  { x: 655, seg: 6, len: 26, fase: 1.8, cor: '#1f8a5b' },
-  { x: 860, seg: 7, len: 30, fase: 3.6, cor: '#2fa36b' },
-];
-const pedras = Array.from({ length: 28 }, () => ({
-  x: rand(0, W), y: rand(CHAO + 22, H - 12), r: rand(4, 12), ang: rand(0, 3.14),
-  cor: ['#b9a274', '#a08a5f', '#c9b48a', '#8d7a52'][Math.floor(rand(0, 4))],
-}));
-
-// ---------- [B1] Eventos ----------
-canvas.addEventListener('click', e => {
-  const r = canvas.getBoundingClientRect();
-  const cx = (e.clientX - r.left) * (W / r.width);
-  const cy = (e.clientY - r.top) * (H / r.height);
-  // A cena pode estar espelhada/cisalhada: usamos a INVERSA da matriz da cena
-  // para descobrir onde o clique caiu nas coordenadas do mundo.
-  const p = matrizCena.inverse().transformPoint(new DOMPoint(cx, cy));
-  for (let i = 0; i < 4; i++) {
-    comidas.push({ x: p.x + rand(-14, 14), y: limita(p.y, 34, CHAO - 20) + rand(-8, 8), rot: rand(0, 6.28) });
-  }
-});
-window.addEventListener('keydown', e => {
-  if (e.code === 'Space') { pausado = !pausado; e.preventDefault(); }
-  if (e.key === 'm' || e.key === 'M') espelhado = !espelhado;
-  if (e.key === 's' || e.key === 'S') ondulando = !ondulando;
-  if ((e.key === 'f' || e.key === 'F') && peixes.length < 14) peixes.push(novoPeixe(rand(80, W - 80), 60));
-});
-
-// ---------- Atualização (lógica) ----------
-const abreBau = t => 0.5 + 0.5 * Math.sin(t * 0.0008);   // 0 = fechado, 1 = aberto
-
-function atualizaPeixe(p, k) {
-  // procura a ração mais próxima
-  let melhor = null, dm = Infinity;
-  for (const c of comidas) {
-    const d = Math.hypot(c.x - p.x, c.y - p.y);
-    if (d < dm) { dm = d; melhor = c; }
-  }
-  const correndo = !!melhor;
-  const alvo = correndo ? melhor : p.alvo;
-  const dx = alvo.x - p.x, dy = alvo.y - p.y, d = Math.hypot(dx, dy) || 1;
-  if (!correndo && d < 30) sorteiaAlvo(p);
-
-  const vmax = correndo ? 2.6 : 1.2;
-  p.vx += (dx / d * vmax - p.vx) * 0.04 * k;
-  p.vy += (dy / d * vmax - p.vy) * 0.04 * k;
-  p.x += p.vx * k;
-  p.y = limita(p.y + p.vy * k, 60, CHAO - 16);
-
-  // direção com histerese (evita ficar virando de um lado pro outro)
-  if (p.vx > 0.25) p.dir = 1; else if (p.vx < -0.25) p.dir = -1;
-  const angAlvo = limita(Math.atan2(p.vy, Math.max(Math.abs(p.vx), 0.6)), -0.7, 0.7);
-  p.ang += (angAlvo - p.ang) * 0.1 * k;
-
-  p.fase += (0.12 + Math.hypot(p.vx, p.vy) * 0.08) * k;   // ritmo da nadadeira
-  p.gulp *= Math.pow(0.94, k);
-
-  // comeu?
-  if (correndo && dm < 16 * p.tam + 6) {
-    comidas.splice(comidas.indexOf(melhor), 1);
-    p.gulp = 1;
-    p.tam = Math.min(p.tam * 1.05, 1.8);                  // cresce um pouquinho
-    for (let i = 0; i < 3; i++) bolhas.push(novaBolha(p.x + p.dir * 20 * p.tam, p.y - 4, rand(2, 4)));
-  }
-}
-
-function atualiza(dt, k) {
-  acBolha += dt;
-  while (acBolha > 320) {
-    acBolha -= 320;
-    bolhas.push(novaBolha(PEDRA_AR.x + rand(-4, 4), PEDRA_AR.y - 6, rand(3, 6)));
-  }
-  acBau += dt;
-  if (abreBau(tempo) > 0.65 && acBau > 140) {
-    acBau = 0;
-    bolhas.push(novaBolha(BAU.x + rand(-20, 10), BAU.y - 50, rand(2, 5)));
-  }
-  peixes.forEach(p => atualizaPeixe(p, k));
-  for (const c of comidas) {
-    if (c.y < CHAO - 6) { c.y += 0.55 * k; c.x += 0.12 * Math.sin(c.rot * 2) * k; }
-    c.rot += 0.04 * k;
-  }
-  for (let i = bolhas.length - 1; i >= 0; i--) {
-    const b = bolhas[i];
-    b.y -= b.vy * k;
-    b.x = b.x0 + 7 * Math.sin(b.fase + b.y * 0.035);
-    if (b.y < 34) bolhas.splice(i, 1);
-  }
-}
-
-// ---------- Desenho ----------
-function desenhaFundo() {
-  const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, '#2a97bd'); g.addColorStop(0.5, '#166b93'); g.addColorStop(1, '#0a2c4d');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, W, H);
-}
-
-function desenhaRaios() {
-  // [B2] CISALHAMENTO: cada raio de luz é um retângulo inclinado com x' = x + k*y
-  const xs = [160, 330, 520, 700, 880], larg = [70, 110, 60, 90, 80];
-  for (let i = 0; i < xs.length; i++) {
-    ctx.save();
-    cisalhaEm(xs[i], 0, -0.45 + 0.06 * Math.sin(tempo * 0.0007 + i), 0);
-    ctx.globalAlpha = 0.5 + 0.5 * Math.sin(tempo * 0.0008 + i * 1.7);
-    const g = ctx.createLinearGradient(0, 0, 0, CHAO);
-    g.addColorStop(0, 'rgba(255,255,255,0.16)'); g.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(xs[i], 0, larg[i], CHAO + 40);
-    ctx.restore();
-  }
-}
-
-function desenhaAreia() {
-  ctx.save();
-  const g = ctx.createLinearGradient(0, CHAO, 0, H);
-  g.addColorStop(0, '#d8c393'); g.addColorStop(1, '#a98e5c');
-  ctx.fillStyle = g;
+function desenhaBolha(raio) {
   ctx.beginPath();
-  ctx.moveTo(-60, CHAO + 10);
-  for (let x = -60; x <= W + 60; x += 20) ctx.lineTo(x, CHAO + 6 * Math.sin(x * 0.012) + 4 * Math.sin(x * 0.04));
-  ctx.lineTo(W + 60, H + 40); ctx.lineTo(-60, H + 40);
-  ctx.closePath(); ctx.fill();
-  ctx.restore();
-
-  for (const p of pedras) {                    // pedrinhas: T → R → S (elipses achatadas)
-    ctx.save();
-    ctx.translate(p.x, p.y);
-    ctx.rotate(p.ang);
-    ctx.scale(1, 0.55);
-    ctx.fillStyle = p.cor;
-    ctx.beginPath(); ctx.arc(0, 0, p.r, 0, Math.PI * 2); ctx.fill();
-    ctx.restore();
-  }
-
-  ctx.save();                                  // pedra de ar
-  ctx.translate(PEDRA_AR.x, PEDRA_AR.y);
-  ctx.scale(1, 0.6);
-  ctx.fillStyle = '#7d8590';
-  ctx.beginPath(); ctx.arc(0, 0, 14, 0, Math.PI * 2); ctx.fill();
-  ctx.restore();
+  ctx.arc(0, 0, raio, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.15)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
 }
 
-function desenhaBau() {
-  const abre = abreBau(tempo);
-  ctx.save();
-  ctx.translate(BAU.x, BAU.y);                 // [1] origem no centro da base do baú
-  ctx.fillStyle = '#8a5a2b'; ctx.fillRect(-36, -34, 72, 34);       // corpo
-  ctx.fillStyle = '#d4a017'; ctx.fillRect(-36, -20, 72, 5);        // faixa
-  ctx.fillStyle = '#ffd23f';                                       // moedas
-  ctx.beginPath(); ctx.ellipse(0, -34, 30, 7, 0, 0, Math.PI * 2); ctx.fill();
+// Estrela-do-mar com o CENTRO em (cx, cy) — coordenadas absolutas da cena.
+// (Desenhada assim de propósito, para mostrar a escala com ponto fixo T → S → T.)
+function desenhaEstrelaDoMar(cx, cy, raio) {
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const r = (i % 2 === 0) ? raio : raio * 0.45;     // pontas e reentrâncias
+    const ang = -Math.PI / 2 + i * Math.PI / 5;
+    const x = cx + r * Math.cos(ang);
+    const y = cy + r * Math.sin(ang);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = '#ff6f61';
+  ctx.fill();
+  ctx.strokeStyle = '#d94f43';
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
 
-  // [5] ROTAÇÃO COM PONTO FIXO: a tampa gira em torno da dobradiça (36, -34)
-  ctx.save();
-  giraEmTorno(36, -34, abre * 1.05);
-  ctx.fillStyle = '#a06a34'; ctx.fillRect(-36, -50, 72, 16);
-  ctx.fillStyle = '#d4a017'; ctx.fillRect(-36, -44, 72, 4);
-  ctx.restore();
-
-  // brilho: T → R → S
-  if (abre > 0.5) {
-    ctx.save();
-    ctx.translate(-8, -52);
-    ctx.rotate(tempo * 0.004);
-    const s = abre * (1 + 0.3 * Math.sin(tempo * 0.01));
-    ctx.scale(s, s);
-    ctx.fillStyle = '#fff6c2';
+  // Pintinhas nos braços
+  ctx.fillStyle = '#ffb199';
+  for (let i = 0; i < 5; i++) {
+    const ang = -Math.PI / 2 + i * 2 * Math.PI / 5;
     ctx.beginPath();
-    ctx.moveTo(0, -9); ctx.lineTo(2, -2); ctx.lineTo(9, 0); ctx.lineTo(2, 2);
-    ctx.lineTo(0, 9); ctx.lineTo(-2, 2); ctx.lineTo(-9, 0); ctx.lineTo(-2, -2);
-    ctx.closePath(); ctx.fill();
-    ctx.restore();
+    ctx.arc(cx + raio * 0.55 * Math.cos(ang), cy + raio * 0.55 * Math.sin(ang), 2.2, 0, Math.PI * 2);
+    ctx.fill();
   }
-  ctx.restore();
 }
 
-function desenhaAlga(a) {
-  // [B3] HIERARQUIA + [4] COMPOSIÇÃO: cada segmento é "filho" do anterior.
-  // A cada volta do laço a matriz acumula rotação, translação e escala.
+// O peixe aponta para +x. A cauda tem 2 partes (base e ponta) = HIERARQUIA.
+function desenhaPeixe(cor, cor2, cauda, ponta) {
+  // --- Cauda ---
   ctx.save();
-  ctx.translate(a.x, CHAO + 8);                // [1] base da alga
-  ctx.strokeStyle = a.cor;
-  ctx.lineCap = 'round';
-  ctx.lineWidth = 10;
-  for (let i = 0; i < a.seg; i++) {
-    ctx.rotate(0.11 * Math.sin(tempo * 0.0015 + a.fase + i * 0.45));   // [2] balança em relação ao pai
-    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -a.len); ctx.stroke();
-    ctx.translate(0, -a.len);                  // vai para a ponta do segmento
-    ctx.scale(0.93, 0.93);                     // [3] o próximo segmento é menor (afina a alga)
-  }
+    // [5] ROTAÇÃO COM PONTO FIXO em (-20, 0):  T → R → T
+    ctx.translate(-20, 0);
+    ctx.rotate(cauda);
+    ctx.translate(20, 0);
+    ctx.fillStyle = cor2;
+    ctx.beginPath();
+    ctx.moveTo(-20, -5); ctx.lineTo(-34, -3); ctx.lineTo(-34, 3); ctx.lineTo(-20, 5);
+    ctx.closePath();
+    ctx.fill();
+
+    // Ponta da cauda: FILHA da base (herda a rotação e soma a sua)
+    ctx.translate(-34, 0);
+    ctx.rotate(ponta);
+    ctx.translate(34, 0);
+    ctx.beginPath();
+    ctx.moveTo(-32, 0); ctx.lineTo(-54, -15); ctx.lineTo(-54, 15);
+    ctx.closePath();
+    ctx.fill();
   ctx.restore();
-}
 
-function desenhaPeixe(p) {
-  const e = p.tam * (1 + 0.25 * p.gulp);       // tamanho + "engolida" ao comer
-  const cauda = 0.45 * Math.sin(p.fase);
-  const ponta = 0.5 * Math.sin(p.fase - 0.9);  // ponta da cauda atrasada em relação à base
-
-  ctx.save();
-  ctx.translate(p.x, p.y);                     // [1] posição
-  ctx.scale(p.dir * e, e);                     // [3] escala; [B2] dir = -1 REFLETE o peixe
-  ctx.rotate(p.ang);                           // [2] inclina o nariz para onde ele nada
-                                               // [4] composição T → S → R
-
-  // [B3] Cauda em 2 níveis: corpo → base da cauda → ponta da cauda
-  ctx.save();
-  giraEmTorno(-20, 0, cauda);                  // [5] pivô no encaixe com o corpo
-  ctx.fillStyle = p.cor2;
+  // --- Corpo ---
+  ctx.fillStyle = cor;
   ctx.beginPath();
-  ctx.moveTo(-20, -5); ctx.lineTo(-34, -3); ctx.lineTo(-34, 3); ctx.lineTo(-20, 5);
-  ctx.closePath(); ctx.fill();
-  giraEmTorno(-34, 0, ponta);                  // filha: herda a rotação da base e soma a sua
+  ctx.ellipse(0, 0, 28, 15, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Listras (recortadas pelo corpo)
+  ctx.save();
+    ctx.clip();
+    ctx.fillStyle = cor2;
+    ctx.fillRect(-9, -20, 7, 40);
+    ctx.fillRect(5, -20, 4, 40);
+  ctx.restore();
+
+  // --- Nadadeiras ---
+  ctx.fillStyle = cor2;
   ctx.beginPath();
-  ctx.moveTo(-32, 0); ctx.lineTo(-54, -15); ctx.quadraticCurveTo(-47, 0, -54, 15);
-  ctx.closePath(); ctx.fill();
-  ctx.restore();
+  ctx.moveTo(-14, -12); ctx.quadraticCurveTo(-4, -30, 10, -12);
+  ctx.closePath();
+  ctx.fill();
 
-  // Corpo
-  ctx.fillStyle = p.cor;
-  ctx.beginPath(); ctx.ellipse(0, 0, 28, 15, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.save();                                  // listras recortadas pelo corpo
-  ctx.clip();
-  ctx.fillStyle = p.cor2;
-  ctx.fillRect(-9, -20, 7, 40); ctx.fillRect(5, -20, 4, 40);
-  ctx.restore();
+  ctx.beginPath();
+  ctx.ellipse(4, 10, 4, 9, 0.3, 0, Math.PI * 2);
+  ctx.fill();
 
-  // Nadadeira dorsal (balança de leve)
-  ctx.save();
-  giraEmTorno(-2, -13, 0.18 * Math.sin(p.fase * 0.5 + 1));
-  ctx.fillStyle = p.cor2;
-  ctx.beginPath(); ctx.moveTo(-14, -12); ctx.quadraticCurveTo(-4, -30, 10, -12); ctx.closePath(); ctx.fill();
-  ctx.restore();
-
-  // Nadadeira peitoral
-  ctx.save();
-  giraEmTorno(6, 4, 0.5 * Math.sin(p.fase * 1.5));
-  ctx.fillStyle = p.cor2;
-  ctx.beginPath(); ctx.ellipse(4, 10, 4, 9, 0.3, 0, Math.PI * 2); ctx.fill();
-  ctx.restore();
-
-  // Olho
+  // --- Olho ---
   ctx.fillStyle = '#fff';
   ctx.beginPath(); ctx.arc(17, -4, 3.6, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#101820';
   ctx.beginPath(); ctx.arc(18, -4, 1.8, 0, Math.PI * 2); ctx.fill();
-
-  ctx.restore();
 }
 
-function desenhaComida(c) {
-  ctx.save();
-  ctx.translate(c.x, c.y);
-  ctx.rotate(c.rot);
-  ctx.fillStyle = '#e9b872';
-  ctx.fillRect(-3, -3, 6, 6);
-  ctx.restore();
+// =============================================================
+// PASSO 2: DADOS DA CENA
+// =============================================================
+
+// Pares de cores [corpo, detalhes]
+const cores = [
+  ['#ff7a59', '#ffc2a8'], ['#ffc93c', '#f08a24'], ['#f25f8e', '#ffb3cc'],
+  ['#b48cff', '#e2d2ff'], ['#f3efe0', '#ff8a5b'], ['#ff9f43', '#ffe0a8']
+];
+
+function criaPeixe() {
+  const c = cores[Math.floor(Math.random() * cores.length)];
+  return {
+    x: Math.random() * canvas.width,
+    y: canvas.height * (0.15 + Math.random() * 0.5),
+    vel: 0.8 + Math.random() * 1.2,
+    dir: Math.random() < 0.5 ? -1 : 1,     // 1 = direita, -1 = esquerda
+    tam: 0.7 + Math.random() * 0.6,
+    cor: c[0], cor2: c[1],
+    fase: Math.random() * 6
+  };
 }
 
-function desenhaBolha(b) {
-  const e = 1 + limita((b.y0 - b.y) / 300, 0, 1) * 0.9;   // cresce enquanto sobe
-  const w = 1 + 0.08 * Math.sin(tempo * 0.01 + b.fase);   // "balança" (achata/estica)
-  ctx.save();
-  escalaEm(b.x, b.y, e * w, e / w);            // [5] ESCALA COM PONTO FIXO no centro da bolha
-  ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(255,255,255,0.14)'; ctx.fill();
-  ctx.lineWidth = 1.2; ctx.strokeStyle = 'rgba(255,255,255,0.75)'; ctx.stroke();
-  ctx.beginPath(); ctx.arc(b.x - b.r * 0.35, b.y - b.r * 0.35, b.r * 0.25, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(255,255,255,0.8)'; ctx.fill();
-  ctx.restore();
+function criaBolha(x, y) {
+  return { x: x, x0: x, y: y, y0: y, r: 3 + Math.random() * 3,
+           vel: 0.6 + Math.random() * 0.8, fase: Math.random() * 6 };
 }
 
-function desenhaSuperficie() {
-  ctx.save();
-  ctx.fillStyle = 'rgba(255,255,255,0.18)';
-  ctx.beginPath();
-  ctx.moveTo(-60, -10);
-  for (let x = -60; x <= W + 60; x += 10) ctx.lineTo(x, 26 + 3 * Math.sin(x * 0.03 + tempo * 0.002));
-  ctx.lineTo(W + 60, -10);
-  ctx.closePath(); ctx.fill();
-  ctx.restore();
-}
+let peixes = [];
+for (let i = 0; i < 7; i++) peixes.push(criaPeixe());
 
-// ---------- [6] Loop de animação ----------
-function frame(agora) {
-  if (ultimo === null) ultimo = agora;
-  const dtReal = Math.min(agora - ultimo, 50);
-  ultimo = agora;
-  const dt = pausado ? 0 : dtReal;
-  tempo += dt;
-  atualiza(dt, dt / 16.67);
+let bolhas = [];
 
-  // [6] RESET DA MATRIZ: todo frame começa da identidade
+// x é uma fração da largura da tela (0 a 1)
+const algas = [
+  { x: 0.05, seg: 7, len: 30, fase: 0.0 },
+  { x: 0.18, seg: 8, len: 32, fase: 1.3 },
+  { x: 0.30, seg: 6, len: 28, fase: 2.1 },
+  { x: 0.52, seg: 7, len: 30, fase: 0.7 },
+  { x: 0.66, seg: 8, len: 34, fase: 2.9 },
+  { x: 0.78, seg: 6, len: 26, fase: 1.8 },
+  { x: 0.95, seg: 7, len: 30, fase: 3.6 }
+];
+
+// =============================================================
+// PASSO 3: LOOP DE ANIMAÇÃO
+// =============================================================
+
+function animar() {
+  // [6] RESET da matriz (obrigatório!) — todo frame começa da identidade
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(0, 0, W, H);
-  desenhaFundo();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const chao = canvas.height - 90;   // altura do topo da areia
+
+  // Fundo (desenhado sem transformação)
+  const fundo = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  fundo.addColorStop(0, '#2a97bd');
+  fundo.addColorStop(1, '#0a2c4d');
+  ctx.fillStyle = fundo;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   // [7] save/restore envolve a cena inteira
   ctx.save();
-  if (espelhado) {                             // [B2] REFLEXÃO da cena: T(W,0) → S(-1,1)
-    ctx.translate(W, 0);
-    ctx.scale(-1, 1);
-  }
-  if (ondulando) {                             // [B2] CISALHAMENTO oscilante em torno da linha central
-    cisalhaEm(W / 2, H / 2, 0.05 * Math.sin(tempo * 0.002), 0);
-  }
-  matrizCena = ctx.getTransform();             // guardamos para converter o clique depois
 
-  desenhaRaios();
-  desenhaAreia();
-  desenhaBau();
-  algas.forEach(desenhaAlga);
-  [...peixes].sort((a, b) => a.tam - b.tam).forEach(desenhaPeixe);
-  comidas.forEach(desenhaComida);
-  bolhas.forEach(desenhaBolha);
-  desenhaSuperficie();
+    // --- PASSO 4: EFEITOS NA CENA INTEIRA ---
+    if (espelhado) {
+      // [B2] REFLEXÃO: leva a origem para a direita e inverte o eixo x
+      ctx.translate(canvas.width, 0);
+      ctx.scale(-1, 1);
+    }
+    if (ondulando) {
+      // [B2] CISALHAMENTO em torno da linha central: T → Shear → T
+      ctx.translate(0, canvas.height / 2);
+      ctx.transform(1, 0, 0.05 * Math.sin(tempo * 2), 1, 0, 0);   // x' = x + k*y
+      ctx.translate(0, -canvas.height / 2);
+    }
+
+    // --- Raios de luz ---
+    for (let i = 0; i < 5; i++) {
+      ctx.save();
+        ctx.translate(canvas.width * (0.15 + 0.2 * i), 0);
+        // [B2] CISALHAMENTO: inclina o retângulo (x' = x - 0.4*y)
+        ctx.transform(1, 0, -0.4 + 0.05 * Math.sin(tempo + i), 1, 0, 0);
+        ctx.fillStyle = 'rgba(255,255,255,0.07)';
+        ctx.fillRect(0, 0, 70, chao + 40);
+      ctx.restore();
+    }
+
+    // --- Areia ---
+    ctx.fillStyle = '#d8c393';
+    ctx.fillRect(-100, chao, canvas.width + 200, canvas.height);
+
+    // --- Baú do tesouro ---
+    ctx.save();
+      ctx.translate(canvas.width * 0.85, chao + 12);   // [1] posição do baú
+      ctx.fillStyle = '#8a5a2b';
+      ctx.fillRect(-36, -34, 72, 34);                  // corpo
+      ctx.fillStyle = '#d4a017';
+      ctx.fillRect(-36, -20, 72, 5);                   // faixa
+      ctx.fillStyle = '#ffd23f';
+      ctx.beginPath();
+      ctx.ellipse(0, -34, 30, 7, 0, 0, Math.PI * 2);   // moedas
+      ctx.fill();
+
+      // Tampa: [5] ROTAÇÃO COM PONTO FIXO na dobradiça (36, -34): T → R → T
+      const abre = 0.5 + 0.5 * Math.sin(tempo * 0.8);  // 0 = fechado, 1 = aberto
+      ctx.translate(36, -34);
+      ctx.rotate(abre * 1.05);                         // [2] rotação
+      ctx.translate(-36, 34);
+      ctx.fillStyle = '#a06a34';
+      ctx.fillRect(-36, -50, 72, 16);
+      ctx.fillStyle = '#d4a017';
+      ctx.fillRect(-36, -44, 72, 4);
+    ctx.restore();
+
+    // --- Estrela-do-mar pulsando ---
+    const ex = canvas.width * 0.40, ey = chao + 45;   // centro da estrela (o ponto fixo)
+    ctx.save();
+      const pulso = 1 + 0.15 * Math.sin(tempo * 3);
+      // [5] ESCALA COM PONTO FIXO em (ex, ey):  T → S → T
+      ctx.translate(ex, ey);              // 1) leva o ponto fixo para a origem
+      ctx.scale(pulso, pulso);            // 2) [3] escala (cresce e diminui em torno do centro)
+      ctx.translate(-ex, -ey);            // 3) devolve o ponto fixo ao lugar
+      desenhaEstrelaDoMar(ex, ey, 22);
+    ctx.restore();
+
+    // --- Algas ---
+    algas.forEach(function(a) {
+      ctx.save();
+        ctx.translate(a.x * canvas.width, chao + 10);
+        ctx.strokeStyle = '#2fa36b';
+        ctx.lineWidth = 10;
+        ctx.lineCap = 'round';
+
+        // [B3] HIERARQUIA + [4] COMPOSIÇÃO: cada segmento é filho do anterior.
+        // A matriz acumula rotação + translação + escala a cada volta do laço.
+        for (let i = 0; i < a.seg; i++) {
+          ctx.rotate(0.11 * Math.sin(tempo * 1.5 + a.fase + i * 0.45));
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(0, -a.len);
+          ctx.stroke();
+          ctx.translate(0, -a.len);     // vai até a ponta do segmento
+          ctx.scale(0.93, 0.93);        // [3] o próximo segmento é menor
+        }
+      ctx.restore();
+    });
+
+    // --- Peixes ---
+    peixes.forEach(function(p) {
+      // Movimento: vai e volta pela tela
+      if (!pausado) {
+        p.x += p.vel * p.dir;
+        if (p.x > canvas.width - 60) p.dir = -1;
+        if (p.x < 60) p.dir = 1;
+      }
+
+      const y = p.y + 20 * Math.sin(tempo * 1.5 + p.fase);     // sobe e desce
+      const inclina = 0.15 * Math.cos(tempo * 1.5 + p.fase);   // nariz acompanha
+      const cauda = 0.45 * Math.sin(tempo * 8 + p.fase);
+      const ponta = 0.5 * Math.sin(tempo * 8 + p.fase - 0.9);  // atrasada em relação à base
+
+      ctx.save();
+        ctx.translate(p.x, y);              // [1] posição
+        ctx.scale(p.dir * p.tam, p.tam);    // [3] escala; [B2] dir = -1 REFLETE o peixe
+        ctx.rotate(inclina);                // [2] rotação      → [4] composição T → S → R
+        desenhaPeixe(p.cor, p.cor2, cauda, ponta);
+      ctx.restore();
+    });
+
+    // --- Bolhas ---
+    if (!pausado && Math.random() < 0.04) {
+      bolhas.push(criaBolha(canvas.width * 0.12, chao));   // bolhas saindo da "pedra de ar"
+    }
+    bolhas.forEach(function(b) {
+      if (!pausado) {
+        b.y -= b.vel;
+        b.x = b.x0 + 7 * Math.sin(b.fase + b.y * 0.035);
+      }
+      const esc = 1 + (b.y0 - b.y) / 400;    // cresce enquanto sobe
+      ctx.save();
+        ctx.translate(b.x, b.y);
+        ctx.scale(esc, esc);                 // [3] escala (ponto fixo = centro da bolha)
+        desenhaBolha(b.r);
+      ctx.restore();
+    });
+    bolhas = bolhas.filter(function(b) { return b.y > 20; });
+
   ctx.restore();
 
-  // HUD (fora do espelhamento, para o texto não ficar invertido)
-  ctx.fillStyle = 'rgba(255,255,255,0.9)';
-  ctx.font = '13px system-ui, sans-serif';
-  ctx.textAlign = 'left';
-  ctx.fillText('Clique: ração  ·  F: peixe  ·  M: espelhar  ·  S: ondulação  ·  Espaço: pausar', 14, 18);
-  ctx.textAlign = 'right';
-  ctx.fillText('peixes: ' + peixes.length + (pausado ? '  ·  pausado' : ''), W - 14, 18);
+  // Atualiza tempo
+  if (!pausado) tempo += 0.016;
 
-  requestAnimationFrame(frame);
+  requestAnimationFrame(animar);
 }
-requestAnimationFrame(frame);
+
+// =============================================================
+// PASSO 5: INTERATIVIDADE (mouse e teclado)
+// =============================================================
+canvas.addEventListener('click', function(e) {
+  let x = e.clientX;
+  if (espelhado) x = canvas.width - x;   // desfaz o espelhamento para acertar o clique
+  for (let i = 0; i < 5; i++) {
+    bolhas.push(criaBolha(x + (Math.random() - 0.5) * 30, e.clientY));
+  }
+});
+
+document.addEventListener('keydown', function(e) {
+  switch (e.key) {
+    case 'f': case 'F': if (peixes.length < 14) peixes.push(criaPeixe()); break;
+    case 'm': case 'M': espelhado = !espelhado; break;
+    case 's': case 'S': ondulando = !ondulando; break;
+    case ' ':           pausado = !pausado; e.preventDefault(); break;
+    case 'r': case 'R':
+      peixes = [];
+      for (let i = 0; i < 7; i++) peixes.push(criaPeixe());
+      bolhas = [];
+      espelhado = false; ondulando = false;
+      break;
+  }
+});
+
+window.addEventListener('resize', function() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+});
+
+// Inicia
+animar();
 </script>
 </body>
 </html>
